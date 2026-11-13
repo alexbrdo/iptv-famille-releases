@@ -1,0 +1,212 @@
+# Compile IPTV Famille et publie les fichiers ici (depot PUBLIC = minutes et stockage
+# gratuits et illimites). Le code reste dans le depot PRIVE alexbrdo/iptv-famille :
+# il est recupere le temps de la compilation avec le jeton RELEASES_TOKEN (lecture seule)
+# et n'est jamais copie dans ce depot.
+#
+# Lancement : automatiquement quand une etiquette v* est poussee dans le depot prive
+# (job « relais » de son build.yml), ou a la main : Actions > Build > Run workflow.
+#
+# Secrets de CE depot : RELEASES_TOKEN (lecture du depot prive), SUPABASE_URL,
+# SUPABASE_PUBLISHABLE_KEY, TMDB_READ_TOKEN. Les versions sont publiees avec le
+# GITHUB_TOKEN automatique (aucun autre droit necessaire).
+name: Build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Etiquette ou branche du depot prive (ex. v0.7.1, ou main)"
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  SRC_REPO: alexbrdo/iptv-famille
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      name: ${{ steps.v.outputs.name }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+          path: src
+      - name: Version et brouillon de la version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          full=$(grep -m1 '^version' src/pubspec.yaml | cut -d' ' -f2)
+          name=${full%%+*}; build=${full##*+}; tag="v$name-$build"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          git -C src log -1 --format=%B | grep -v -e '^Co-Authored-By' -e '^Claude-Session' > notes.txt
+          gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft \
+            --title "IPTV Famille $name" --notes-file notes.txt
+
+  android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '21' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - name: Fichier .env (depuis les secrets)
+        run: printf 'SUPABASE_URL=%s\nSUPABASE_PUBLISHABLE_KEY=%s\nTMDB_READ_TOKEN=%s\n' "${{ secrets.SUPABASE_URL }}" "${{ secrets.SUPABASE_PUBLISHABLE_KEY }}" "${{ secrets.TMDB_READ_TOKEN }}" > .env
+      - run: flutter pub get
+      - run: flutter test
+      - name: Compilation Android
+        run: |
+          flutter build apk --release --split-per-abi --dart-define-from-file=.env \
+            --dart-define=APP_VERSION=$(grep -m1 '^version' pubspec.yaml | cut -d' ' -f2)
+      - name: Envoi dans la version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd build/app/outputs/flutter-apk
+          for f in app-*-release.apk; do cp "$f" "IPTV-Famille-${f#app-}"; done
+          gh release upload "${{ needs.prepare.outputs.tag }}" IPTV-Famille-*-release.apk \
+            -R "$GITHUB_REPOSITORY" --clobber
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - name: Fichier .env (depuis les secrets)
+        shell: bash
+        run: printf 'SUPABASE_URL=%s\nSUPABASE_PUBLISHABLE_KEY=%s\nTMDB_READ_TOKEN=%s\n' "${{ secrets.SUPABASE_URL }}" "${{ secrets.SUPABASE_PUBLISHABLE_KEY }}" "${{ secrets.TMDB_READ_TOKEN }}" > .env
+      - name: Compilation Windows
+        shell: bash
+        run: |
+          flutter build windows --release --dart-define-from-file=.env \
+            --dart-define=APP_VERSION=$(grep -m1 '^version' pubspec.yaml | cut -d' ' -f2)
+      - name: Archive
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath IPTV-Famille-windows.zip
+      - name: Envoi dans la version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" IPTV-Famille-windows.zip -R "$GITHUB_REPOSITORY" --clobber
+
+  macos:
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - name: Fichier .env (depuis les secrets)
+        run: printf 'SUPABASE_URL=%s\nSUPABASE_PUBLISHABLE_KEY=%s\nTMDB_READ_TOKEN=%s\n' "${{ secrets.SUPABASE_URL }}" "${{ secrets.SUPABASE_PUBLISHABLE_KEY }}" "${{ secrets.TMDB_READ_TOKEN }}" > .env
+      - name: Compilation Mac
+        run: |
+          flutter build macos --release --dart-define-from-file=.env \
+            --dart-define=APP_VERSION=$(grep -m1 '^version' pubspec.yaml | cut -d' ' -f2)
+      - name: Archive et envoi dans la version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd build/macos/Build/Products/Release && ditto -c -k --keepParent iptv_famille.app "$GITHUB_WORKSPACE/IPTV-Famille-mac.zip")
+          gh release upload "${{ needs.prepare.outputs.tag }}" IPTV-Famille-mac.zip -R "$GITHUB_REPOSITORY" --clobber
+
+  ios:
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+      - name: Xcode le plus recent (device_info_plus a besoin du SDK iOS 26)
+        run: |
+          x=$(ls -d /Applications/Xcode_2[6-9]*.app 2>/dev/null | grep -v -i beta | tail -n 1)
+          if [ -n "$x" ]; then sudo xcode-select -s "$x"; fi
+          xcodebuild -version
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - name: Fichier .env (depuis les secrets)
+        run: printf 'SUPABASE_URL=%s\nSUPABASE_PUBLISHABLE_KEY=%s\nTMDB_READ_TOKEN=%s\n' "${{ secrets.SUPABASE_URL }}" "${{ secrets.SUPABASE_PUBLISHABLE_KEY }}" "${{ secrets.TMDB_READ_TOKEN }}" > .env
+      - name: Compilation iPhone (non signee, a signer avec iloader)
+        run: |
+          flutter build ios --release --no-codesign --dart-define-from-file=.env \
+            --dart-define=APP_VERSION=$(grep -m1 '^version' pubspec.yaml | cut -d' ' -f2)
+      - name: .ipa et envoi dans la version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p Payload && cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qry IPTV-Famille.ipa Payload
+          gh release upload "${{ needs.prepare.outputs.tag }}" IPTV-Famille.ipa -R "$GITHUB_REPOSITORY" --clobber
+
+  # Publie la version (avec latest.json pour la mise a jour automatique) des que
+  # Windows ou Mac est pret ; Android / iPhone sont facultatifs.
+  publish:
+    needs: [prepare, android, windows, macos, ios]
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.windows.result == 'success' || needs.macos.result == 'success') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: latest.json
+        run: |
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          echo "$assets"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body -q .body > notes.txt
+          NAME="${{ needs.prepare.outputs.name }}" BUILD="${{ needs.prepare.outputs.build }}" \
+          BASE="$base" ASSETS="$assets" python3 - <<'PY'
+          import json, os
+          have = set(os.environ["ASSETS"].split())
+          files = {}
+          if "IPTV-Famille-windows.zip" in have:
+              files["windows"] = os.environ["BASE"] + "/IPTV-Famille-windows.zip"
+          if "IPTV-Famille-mac.zip" in have:
+              files["macos"] = os.environ["BASE"] + "/IPTV-Famille-mac.zip"
+          json.dump({
+              "version": os.environ["NAME"],
+              "build": int(os.environ["BUILD"]),
+              "notes": open("notes.txt").read().strip(),
+              "files": files,
+          }, open("latest.json", "w"), ensure_ascii=False, indent=1)
+          PY
+          cat latest.json
+      - name: Publication
+        run: |
+          gh release upload "$TAG" latest.json -R "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
+          # On garde les 5 dernieres versions
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt,isDraft \
+            -q 'map(select(.isDraft | not)) | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+            xargs -r -n1 gh release delete -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
