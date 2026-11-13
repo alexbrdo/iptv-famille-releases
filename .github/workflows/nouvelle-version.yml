@@ -1,0 +1,38 @@
+# Toutes les 30 minutes : regarde la derniere etiquette v* du depot prive. Si sa version
+# n'est pas encore publiee ici et n'a pas deja ete compilee, lance « Build » dessus.
+# (Remplace le relais du depot prive, dont les minutes Actions sont limitees.)
+name: Nouvelle version ?
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derniere etiquette du depot prive
+        env:
+          SRC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(GH_TOKEN="$SRC_TOKEN" gh api --paginate repos/alexbrdo/iptv-famille/tags --jq '.[].name' \
+                | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          [ -n "$tag" ] || { echo "Aucune etiquette."; exit 0; }
+          full=$(GH_TOKEN="$SRC_TOKEN" gh api "repos/alexbrdo/iptv-famille/contents/pubspec.yaml?ref=$tag" --jq .content \
+                 | base64 -d | grep -m1 '^version' | cut -d' ' -f2)
+          rel="v${full%%+*}-${full##*+}"
+          echo "Derniere etiquette : $tag (version $full -> $rel)"
+          if gh release view "$rel" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Deja publiee."; exit 0
+          fi
+          if gh run list -R "$GITHUB_REPOSITORY" -w build.yml --limit 50 --json displayTitle \
+               -q '.[].displayTitle' | grep -qx "Build $tag"; then
+            echo "Deja compilee (ou en cours) : rien a faire."; exit 0
+          fi
+          gh workflow run build.yml -R "$GITHUB_REPOSITORY" -f ref="$tag"
+          echo "Compilation lancee pour $tag."
