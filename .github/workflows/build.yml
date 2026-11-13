@@ -3,13 +3,15 @@
 # il est recupere le temps de la compilation avec le jeton RELEASES_TOKEN (lecture seule)
 # et n'est jamais copie dans ce depot.
 #
-# Lancement : automatiquement quand une etiquette v* est poussee dans le depot prive
-# (job « relais » de son build.yml), ou a la main : Actions > Build > Run workflow.
+# Lancement : automatiquement par nouvelle-version.yml (toutes les 30 min, des qu'une
+# nouvelle etiquette v* apparait dans le depot prive), ou a la main :
+# Actions > Build > Run workflow (ref = l'etiquette, ex. v0.7.2).
 #
 # Secrets de CE depot : RELEASES_TOKEN (lecture du depot prive), SUPABASE_URL,
 # SUPABASE_PUBLISHABLE_KEY, TMDB_READ_TOKEN. Les versions sont publiees avec le
 # GITHUB_TOKEN automatique (aucun autre droit necessaire).
 name: Build
+run-name: Build ${{ inputs.ref }}
 on:
   workflow_dispatch:
     inputs:
