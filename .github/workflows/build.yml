@@ -208,7 +208,8 @@ jobs:
         run: |
           gh release upload "$TAG" latest.json -R "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
-          # On garde les 5 dernieres versions
-          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt,isDraft \
-            -q 'map(select(.isDraft | not)) | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          # On garde les 5 dernieres versions (triees par date de PUBLICATION : createdAt est
+          # la date du commit du depot public, identique pour toutes les versions)
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,publishedAt,isDraft \
+            -q 'map(select(.isDraft | not)) | sort_by(.publishedAt) | reverse | .[5:] | .[].tagName' |
             xargs -r -n1 gh release delete -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
